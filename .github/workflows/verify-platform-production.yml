@@ -1,0 +1,35 @@
+name: Verify A+Trainer production platform
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify production deployment
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.HOST }}
+          username: root
+          password: ${{ secrets.PASS }}
+          command_timeout: 3m
+          script: |
+            set -e
+            cd /opt/a-trainer
+            echo "deployed=$(git rev-parse HEAD)"
+            test "$(git rev-parse HEAD)" = "ab5f719919ba328b75f2738e67fda768a13c5250"
+            curl -fsS http://127.0.0.1:3087/api/health | grep -q '"version":"2.0"'
+            curl -fsS https://training.smarbiz.sbs/api/health | grep -q '"version":"2.0"'
+            curl -fsS https://training.smarbiz.sbs/ | grep -q 'Mehr als nur eine Buchungsplattform'
+            curl -fsS https://training.smarbiz.sbs/ | grep -q 'id="trainerMap"'
+            curl -fsS https://training.smarbiz.sbs/features.css | grep -q 'map-panel'
+            curl -fsS https://training.smarbiz.sbs/api/config | grep -q 'stripeEnabled'
+            node - <<'NODE'
+            const fs=require('fs');
+            const db=JSON.parse(fs.readFileSync('/opt/a-trainer/data/db.json','utf8'));
+            if(!Array.isArray(db.users)||!Array.isArray(db.trainers)||!Array.isArray(db.bookings)||!Array.isArray(db.messages)||!Array.isArray(db.reviews)) process.exit(1);
+            console.log(`data-ok users=${db.users.length} trainers=${db.trainers.length} bookings=${db.bookings.length}`);
+            NODE
+            echo "production-platform-ok"
