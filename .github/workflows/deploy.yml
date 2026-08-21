@@ -1,0 +1,96 @@
+name: Deploy A+Trainer
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: a-trainer-production
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to production server
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.HOST }}
+          username: root
+          password: ${{ secrets.PASS }}
+          script_stop: true
+          command_timeout: 20m
+          script: |
+            set -e
+            APP_DIR=/opt/a-trainer
+            DOMAIN=training.smarbiz.sbs
+
+            if ! command -v node >/dev/null 2>&1 || [ "$(node -p "Number(process.versions.node.split('.')[0])" 2>/dev/null || echo 0)" -lt 18 ]; then
+              apt-get update
+              apt-get install -y ca-certificates curl gnupg
+              curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+              apt-get install -y nodejs
+            fi
+
+            if [ ! -d "$APP_DIR/.git" ]; then
+              mkdir -p "$APP_DIR"
+              git clone https://github.com/hsdarestani/training.git "$APP_DIR"
+            else
+              cd "$APP_DIR"
+              git fetch origin main
+              git reset --hard origin/main
+            fi
+
+            cd "$APP_DIR"
+            npm install --omit=dev
+            mkdir -p data
+            if [ ! -f .env ]; then
+              printf 'JWT_SECRET=%s\nPORT=3087\n' "$(openssl rand -hex 32)" > .env
+              chmod 600 .env
+            fi
+
+            if ! command -v pm2 >/dev/null 2>&1; then npm install -g pm2; fi
+            pm2 startOrReload ecosystem.config.cjs --update-env
+            pm2 save
+            pm2 startup systemd -u root --hp /root >/tmp/a-trainer-pm2-startup.txt 2>&1 || true
+
+            if ! command -v nginx >/dev/null 2>&1; then
+              apt-get update
+              apt-get install -y nginx
+            fi
+
+            cat > /etc/nginx/sites-available/$DOMAIN <<'NGINX'
+            server {
+              listen 80;
+              listen [::]:80;
+              server_name training.smarbiz.sbs;
+              client_max_body_size 5m;
+
+              location / {
+                proxy_pass http://127.0.0.1:3087;
+                proxy_http_version 1.1;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+                proxy_set_header Upgrade $http_upgrade;
+                proxy_set_header Connection "upgrade";
+              }
+            }
+            NGINX
+
+            ln -sf /etc/nginx/sites-available/$DOMAIN /etc/nginx/sites-enabled/$DOMAIN
+            rm -f /etc/nginx/sites-enabled/default
+            nginx -t
+            systemctl enable nginx
+            systemctl reload nginx
+
+            if ! command -v certbot >/dev/null 2>&1; then
+              apt-get install -y certbot python3-certbot-nginx || true
+            fi
+            if command -v certbot >/dev/null 2>&1; then
+              certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --email info@aplus-solution.de --redirect || true
+            fi
+
+            curl -fsS http://127.0.0.1:3087/api/health
