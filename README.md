@@ -35,6 +35,8 @@ Pushing to `main` triggers `.github/workflows/deploy.yml`. The workflow expects 
 
 Production data lives in `/opt/a-trainer/data/db.json` and is intentionally not committed.
 
+Deployment is managed automatically through GitHub Actions.
+
 ## Architecture
 
 The MVP uses a dependency-light Node/Express API plus a build-free responsive SPA. This keeps deployment simple while leaving clean upgrade paths for PostgreSQL, payments, chat, calendar sync, reviews and native wrappers later.
