@@ -21,14 +21,21 @@ jobs:
           node --check public/app.js
           node --check public/sw.js
           node --check scripts/e2e.mjs
-      - name: Verify German interface
+      - name: Verify German interface and platform modules
         run: |
           grep -q '<html lang="de">' public/index.html
           grep -q 'Anmelden' public/index.html
           grep -q 'Registrieren' public/index.html
           grep -q 'Trainer finden' public/index.html
+          grep -q 'Trainer in deiner Nähe' public/index.html
+          grep -q 'Kalender & Verfügbarkeit' public/index.html
+          grep -q 'Direkter Chat' public/index.html
+          grep -q 'Echte Bewertungen' public/index.html
+          grep -q 'Zahlung' public/index.html
+          grep -q 'id="trainerMap"' public/index.html
+          test -s public/features.css
           ! grep -Eq '>Log in<|>Create account<|>Discover<|>Bookings<|>Account<' public/index.html
-      - name: End-to-end auth and booking test
+      - name: End-to-end platform test
         env:
           DATA_DIR: /tmp/a-trainer-ci-data
           JWT_SECRET: ci-only-secret

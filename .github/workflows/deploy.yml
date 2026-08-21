@@ -15,10 +15,13 @@ jobs:
     steps:
       - name: Deploy to production server
         uses: appleboy/ssh-action@v1.2.0
+        env:
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
         with:
           host: ${{ secrets.HOST }}
           username: root
           password: ${{ secrets.PASS }}
+          envs: STRIPE_SECRET_KEY
           command_timeout: 20m
           script: |
             set -e
@@ -44,10 +47,18 @@ jobs:
             cd "$APP_DIR"
             npm install --omit=dev
             mkdir -p data
-            if [ ! -f .env ]; then
-              printf 'JWT_SECRET=%s\nPORT=3087\n' "$(openssl rand -hex 32)" > .env
-              chmod 600 .env
+            touch .env
+            if ! grep -q '^JWT_SECRET=' .env; then
+              printf 'JWT_SECRET=%s\n' "$(openssl rand -hex 32)" >> .env
             fi
+            if ! grep -q '^PORT=' .env; then printf 'PORT=3087\n' >> .env; fi
+            sed -i '/^APP_URL=/d' .env
+            printf 'APP_URL=https://%s\n' "$DOMAIN" >> .env
+            if [ -n "${STRIPE_SECRET_KEY:-}" ]; then
+              sed -i '/^STRIPE_SECRET_KEY=/d' .env
+              printf 'STRIPE_SECRET_KEY=%s\n' "$STRIPE_SECRET_KEY" >> .env
+            fi
+            chmod 600 .env
 
             if ! command -v pm2 >/dev/null 2>&1; then npm install -g pm2; fi
             pm2 startOrReload ecosystem.config.cjs --update-env
@@ -65,7 +76,6 @@ jobs:
               listen [::]:80;
               server_name training.smarbiz.sbs;
               client_max_body_size 5m;
-
               location / {
                 proxy_pass http://127.0.0.1:3087;
                 proxy_http_version 1.1;
@@ -85,12 +95,8 @@ jobs:
             systemctl enable nginx
             systemctl reload nginx
 
-            if ! command -v certbot >/dev/null 2>&1; then
-              apt-get install -y certbot python3-certbot-nginx || true
-            fi
-            if command -v certbot >/dev/null 2>&1; then
-              certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --email info@aplus-solution.de --redirect || true
-            fi
+            if ! command -v certbot >/dev/null 2>&1; then apt-get install -y certbot python3-certbot-nginx || true; fi
+            if command -v certbot >/dev/null 2>&1; then certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --email info@aplus-solution.de --redirect || true; fi
 
             curl -fsS http://127.0.0.1:3087/api/health
-            curl -fsS -H "Host: $DOMAIN" http://127.0.0.1/api/health
+            curl -fsS https://$DOMAIN/api/health

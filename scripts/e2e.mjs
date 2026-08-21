@@ -1,97 +1,35 @@
 import assert from 'node:assert/strict';
-
 const base = process.env.BASE_URL || 'http://127.0.0.1:3087';
 const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const password = 'Test12345!';
-
-async function request(path, { method = 'GET', token, body, expect = 200 } = {}) {
-  const headers = { 'Content-Type': 'application/json' };
-  if (token) headers.Authorization = `Bearer ${token}`;
-  const res = await fetch(`${base}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined });
-  const data = await res.json().catch(() => ({}));
-  assert.equal(res.status, expect, `${method} ${path}: erwartet ${expect}, erhalten ${res.status}: ${JSON.stringify(data)}`);
-  return data;
-}
-
-function futureDate(days) {
-  const d = new Date();
-  d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
-}
-
-console.log('1/10 Healthcheck');
-assert.equal((await request('/api/health')).app, 'A+Trainer');
-
-console.log('2/10 Kundenkonto registrieren');
-const clientEmail = `kunde-${suffix}@example.de`;
-const clientReg = await request('/api/auth/register', {
-  method: 'POST', expect: 201,
-  body: { role:'client', name:'CI Testkunde', email:clientEmail, password, city:'Frankfurt am Main', phone:'+49123456789' }
-});
-assert.equal(clientReg.user.role, 'client');
-assert.ok(clientReg.token);
-
-console.log('3/10 Doppelregistrierung und Login prüfen');
-const duplicate = await request('/api/auth/register', {
-  method:'POST', expect:409,
-  body:{ role:'client', name:'CI Testkunde', email:clientEmail, password, city:'Frankfurt am Main' }
-});
-assert.match(duplicate.error, /bereits ein Konto/i);
-const clientLogin = await request('/api/auth/login', { method:'POST', body:{ email:clientEmail, password } });
-assert.equal(clientLogin.user.email, clientEmail);
-const clientToken = clientLogin.token;
-assert.equal((await request('/api/me', { token:clientToken })).name, 'CI Testkunde');
-
-console.log('4/10 Trainersuche prüfen');
-const trainers = await request('/api/trainers?specialty=Krafttraining');
-assert.ok(Array.isArray(trainers) && trainers.length > 0, 'Keine Trainer für Krafttraining gefunden');
-const lena = trainers.find((t) => t.id === 'tr-lena') || trainers[0];
-assert.ok(lena.slots.length > 0 && lena.venues.length > 0);
-
-console.log('5/10 Buchung als Kunde erstellen');
-const booking = await request('/api/bookings', {
-  method:'POST', token:clientToken, expect:201,
-  body:{ trainerId:lena.id, date:futureDate(2), time:lena.slots[0], venue:lena.venues[0], note:'Automatischer E2E-Test' }
-});
-assert.equal(booking.status, 'confirmed');
-const clientBookings = await request('/api/bookings', { token:clientToken });
-assert.ok(clientBookings.some((b) => b.id === booking.id));
-
-console.log('6/10 Buchung als Kunde stornieren');
-const cancelled = await request(`/api/bookings/${booking.id}`, { method:'PATCH', token:clientToken, body:{ status:'cancelled' } });
-assert.equal(cancelled.status, 'cancelled');
-
-console.log('7/10 Trainerkonto registrieren und Login prüfen');
-const trainerEmail = `trainer-${suffix}@example.de`;
-const trainerReg = await request('/api/auth/register', {
-  method:'POST', expect:201,
-  body:{ role:'trainer', name:'CI Testtrainer', email:trainerEmail, password, city:'Frankfurt am Main', specialty:'Mobilität' }
-});
-assert.equal(trainerReg.user.role, 'trainer');
-assert.ok(trainerReg.user.trainerId);
-const trainerLogin = await request('/api/auth/login', { method:'POST', body:{ email:trainerEmail, password } });
-const trainerToken = trainerLogin.token;
-
-console.log('8/10 Trainerprofil bearbeiten');
-const edited = await request('/api/me/trainer', {
-  method:'PATCH', token:trainerToken,
-  body:{ price:99, experience:4, bio:'Deutsches Testprofil', specialties:['Mobilität','Krafttraining'], venues:['Fitnessstudio'], slots:['12:00','18:00'], languages:['Deutsch'] }
-});
-assert.equal(edited.price, 99);
-assert.deepEqual(edited.slots, ['12:00','18:00']);
-const publicProfile = await request(`/api/trainers/${trainerReg.user.trainerId}`);
-assert.equal(publicProfile.bio, 'Deutsches Testprofil');
-
-console.log('9/10 Kunde bucht neuen Trainer, Trainer sieht Buchung');
-const trainerBooking = await request('/api/bookings', {
-  method:'POST', token:clientToken, expect:201,
-  body:{ trainerId:trainerReg.user.trainerId, date:futureDate(3), time:'12:00', venue:'Fitnessstudio', note:'Bis gleich' }
-});
-const trainerBookings = await request('/api/bookings', { token:trainerToken });
-assert.ok(trainerBookings.some((b) => b.id === trainerBooking.id && b.client?.name === 'CI Testkunde'));
-
-console.log('10/10 Trainer schließt Einheit ab');
-const completed = await request(`/api/bookings/${trainerBooking.id}`, { method:'PATCH', token:trainerToken, body:{ status:'completed' } });
-assert.equal(completed.status, 'completed');
-
-console.log('✅ Alle A+Trainer End-to-End-Flows funktionieren.');
+async function request(path,{method='GET',token,body,expect=200}={}){const headers={'Content-Type':'application/json'};if(token)headers.Authorization=`Bearer ${token}`;const res=await fetch(`${base}${path}`,{method,headers,body:body?JSON.stringify(body):undefined});const data=await res.json().catch(()=>({}));assert.equal(res.status,expect,`${method} ${path}: erwartet ${expect}, erhalten ${res.status}: ${JSON.stringify(data)}`);return data;}
+function futureDate(days=3){const d=new Date();d.setDate(d.getDate()+days);return d.toISOString().slice(0,10);}
+const date=futureDate(3);
+console.log('1/12 Health & Konfiguration');
+assert.equal((await request('/api/health')).app,'A+Trainer');const config=await request('/api/config');assert.equal(typeof config.stripeEnabled,'boolean');
+console.log('2/12 Professionelles Kundenkonto');
+const clientEmail=`kunde-${suffix}@example.de`;const clientReg=await request('/api/auth/register',{method:'POST',expect:201,body:{role:'client',name:'CI Testkunde',email:clientEmail,password,city:'Frankfurt am Main',phone:'+49123456789',goal:'Muskelaufbau',fitnessLevel:'Fortgeschritten'}});const clientToken=clientReg.token;assert.equal(clientReg.user.role,'client');
+const clientProfile=await request('/api/me/profile',{method:'PATCH',token:clientToken,body:{bio:'Ich trainiere für mehr Kraft und Beweglichkeit.',goals:['Muskelaufbau','Mobilität'],preferredTraining:['Krafttraining','Outdoor'],languages:['Deutsch','Englisch'],area:'Westend',avatar:'https://example.com/client.jpg',lat:50.111,lng:8.682}});assert.deepEqual(clientProfile.goals,['Muskelaufbau','Mobilität']);assert.equal(clientProfile.fitnessLevel,'Fortgeschritten');
+console.log('3/12 Login & Standortsuche');
+const login=await request('/api/auth/login',{method:'POST',body:{email:clientEmail,password}});assert.ok(login.token);const nearby=await request('/api/trainers?lat=50.1109&lng=8.6821&radius=80');assert.ok(nearby.length>=3);assert.ok(nearby.some(t=>Number.isFinite(t.distanceKm)));assert.ok(nearby.every(t=>t.headline&&Array.isArray(t.certifications)));
+console.log('4/12 Professionelles Trainerkonto');
+const trainerEmail=`trainer-${suffix}@example.de`;const trainerReg=await request('/api/auth/register',{method:'POST',expect:201,body:{role:'trainer',name:'CI Profi Trainer',email:trainerEmail,password,city:'Frankfurt am Main',specialty:'Krafttraining',headline:'Kraft & Mobility Coach'}});const trainerToken=trainerReg.token;const trainerId=trainerReg.user.trainerId;assert.ok(trainerId);
+const allDays={0:['12:00','18:00'],1:['12:00','18:00'],2:['12:00','18:00'],3:['12:00','18:00'],4:['12:00','18:00'],5:['12:00','18:00'],6:['12:00','18:00']};
+const trainerProfile=await request('/api/me/trainer',{method:'PATCH',token:trainerToken,body:{price:99,experience:7,bio:'Individuelles Coaching mit professioneller Betreuung.',headline:'Kraft & Mobility Coach',specialties:['Krafttraining','Mobilität'],trainingTypes:['1:1 Personal Training'],venues:['Fitnessstudio','Outdoor'],languages:['Deutsch','Englisch'],certifications:['A-Lizenz','Personal Trainer Zertifikat'],availability:allDays,lat:50.115,lng:8.67}});assert.equal(trainerProfile.price,99);assert.deepEqual(trainerProfile.certifications,['A-Lizenz','Personal Trainer Zertifikat']);
+console.log('5/12 Echte Verfügbarkeit');
+const availability=await request(`/api/trainers/${trainerId}/availability?date=${date}`);assert.deepEqual(availability.slots,['12:00','18:00']);
+console.log('6/12 Buchung & Kollisionsschutz');
+const booking=await request('/api/bookings',{method:'POST',token:clientToken,expect:201,body:{trainerId,date,time:'12:00',venue:'Fitnessstudio',note:'E2E Termin',paymentMethod:'vor_ort'}});assert.equal(booking.status,'confirmed');assert.equal(booking.paymentStatus,'offen');await request('/api/bookings',{method:'POST',token:clientToken,expect:409,body:{trainerId,date,time:'12:00',venue:'Fitnessstudio'}});const remaining=await request(`/api/trainers/${trainerId}/availability?date=${date}`);assert.deepEqual(remaining.slots,['18:00']);
+console.log('7/12 Zahlung vor Ort');
+const pay=await request(`/api/bookings/${booking.id}/payment`,{method:'POST',token:clientToken,body:{method:'vor_ort'}});assert.equal(pay.paymentMethod,'vor_ort');
+console.log('8/12 Privater Buchungs-Chat');
+await request(`/api/bookings/${booking.id}/messages`,{method:'POST',token:clientToken,expect:201,body:{text:'Hallo, ich freue mich auf das Training!'}});await request(`/api/bookings/${booking.id}/messages`,{method:'POST',token:trainerToken,expect:201,body:{text:'Perfekt, bis bald!'}});const messages=await request(`/api/bookings/${booking.id}/messages`,{token:clientToken});assert.equal(messages.length,2);assert.equal(messages[1].senderName,'CI Profi Trainer');
+console.log('9/12 Trainer sieht professionelles Kundenprofil');
+const trainerBookings=await request('/api/bookings',{token:trainerToken});const incoming=trainerBookings.find(b=>b.id===booking.id);assert.equal(incoming.client.fitnessLevel,'Fortgeschritten');assert.deepEqual(incoming.client.goals,['Muskelaufbau','Mobilität']);assert.equal(incoming.messagesCount,2);
+console.log('10/12 Kalender & Abschluss');
+const cal=await request(`/api/calendar?from=${date}&to=${date}`,{token:trainerToken});assert.ok(cal.some(b=>b.id===booking.id));const completed=await request(`/api/bookings/${booking.id}`,{method:'PATCH',token:trainerToken,body:{status:'completed'}});assert.equal(completed.status,'completed');
+console.log('11/12 Verifizierte Bewertung');
+const review=await request(`/api/bookings/${booking.id}/review`,{method:'POST',token:clientToken,expect:201,body:{rating:5,comment:'Sehr professionell und gut strukturiert.'}});assert.equal(review.rating,5);await request(`/api/bookings/${booking.id}/review`,{method:'POST',token:clientToken,expect:409,body:{rating:5}});const publicTrainer=await request(`/api/trainers/${trainerId}`);assert.equal(publicTrainer.reviews,1);assert.equal(publicTrainer.rating,5);assert.equal(publicTrainer.recentReviews[0].clientName,'CI Testkunde');
+console.log('12/12 Profil- und Buchungsdaten bleiben verbunden');
+const clientBookings=await request('/api/bookings',{token:clientToken});const finalBooking=clientBookings.find(b=>b.id===booking.id);assert.equal(finalBooking.review.rating,5);assert.equal(finalBooking.trainer.headline,'Kraft & Mobility Coach');assert.equal((await request('/api/me',{token:clientToken})).bio,'Ich trainiere für mehr Kraft und Beweglichkeit.');
+console.log('✅ Profile, Map-Daten, Availability, Booking, Payment, Chat, Reviews und Calendar funktionieren end-to-end.');

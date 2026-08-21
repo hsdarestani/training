@@ -1,364 +1,118 @@
 const state = {
-  trainers: [],
-  user: null,
-  token: localStorage.getItem('aTrainerToken') || '',
-  selectedTrainer: null,
-  pendingTrainerId: null,
-  filters: { search: '', specialty: '', maxPrice: '' }
+  trainers: [], user: null, token: localStorage.getItem('aTrainerToken') || '', selectedTrainer: null,
+  pendingTrainerId: null, filters: { search:'', specialty:'', maxPrice:'' }, config: { stripeEnabled:false },
+  userLocation: null, map: null, markerLayer: null, chatTimer: null, chatBookingId: null
 };
+const $ = (s, root=document) => root.querySelector(s);
+const $$ = (s, root=document) => [...root.querySelectorAll(s)];
+const modalBackdrop = $('#modalBackdrop'); const modal = $('#modal');
+const statusLabels = { confirmed:'Bestätigt', completed:'Abgeschlossen', cancelled:'Storniert', declined:'Abgelehnt' };
+const paymentLabels = { offen:'Offen', bezahlt:'Bezahlt' };
+const weekdays = ['Sonntag','Montag','Dienstag','Mittwoch','Donnerstag','Freitag','Samstag'];
 
-const $ = (s, root = document) => root.querySelector(s);
-const $$ = (s, root = document) => [...root.querySelectorAll(s)];
-const modalBackdrop = $('#modalBackdrop');
-const modal = $('#modal');
-
-const specialtyLabels = {
-  'Strength': 'Krafttraining', 'Krafttraining': 'Krafttraining',
-  'Muscle gain': 'Muskelaufbau', 'Muskelaufbau': 'Muskelaufbau',
-  'Body transformation': 'Körpertransformation', 'Körpertransformation': 'Körpertransformation',
-  'Weight loss': 'Abnehmen', 'Abnehmen': 'Abnehmen',
-  'Nutrition': 'Ernährung', 'Ernährung': 'Ernährung',
-  'Mobility': 'Mobilität', 'Mobilität': 'Mobilität',
-  'Running': 'Laufen', 'Laufen': 'Laufen',
-  'Endurance': 'Ausdauer', 'Ausdauer': 'Ausdauer',
-  'Boxing': 'Boxen', 'Boxen': 'Boxen',
-  'Conditioning': 'Kondition', 'Kondition': 'Kondition',
-  'Pilates': 'Pilates', 'Personal Training': 'Personal Training'
-};
-const venueLabels = {
-  'Outdoor': 'Outdoor', 'Gym': 'Fitnessstudio', 'Fitnessstudio': 'Fitnessstudio',
-  'At your home': 'Bei dir zu Hause', 'Bei dir zu Hause': 'Bei dir zu Hause',
-  'Online': 'Online', 'Studio': 'Studio'
-};
-const statusLabels = {
-  confirmed: 'Bestätigt', completed: 'Abgeschlossen', cancelled: 'Storniert', declined: 'Abgelehnt'
-};
-
-async function api(path, options = {}) {
-  const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+async function api(path, options={}) {
+  const headers = { 'Content-Type':'application/json', ...(options.headers||{}) };
   if (state.token) headers.Authorization = `Bearer ${state.token}`;
-  const res = await fetch(path, { ...options, headers });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || 'Etwas ist schiefgelaufen. Bitte versuche es erneut.');
-  return data;
+  const res = await fetch(path, { ...options, headers }); const data = await res.json().catch(()=>({}));
+  if (!res.ok) throw new Error(data.error || 'Etwas ist schiefgelaufen. Bitte versuche es erneut.'); return data;
+}
+function escapeHtml(v=''){ return String(v).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
+function toast(message,error=false){ const n=document.createElement('div'); n.className=`toast${error?' error':''}`; n.textContent=message; $('#toastStack').appendChild(n); setTimeout(()=>n.remove(),3400); }
+function clearChatTimer(){ if(state.chatTimer){clearInterval(state.chatTimer);state.chatTimer=null;} state.chatBookingId=null; }
+function closeModal(){ clearChatTimer(); modalBackdrop.classList.add('hidden'); modal.innerHTML=''; modal.className='modal'; }
+function openModal(content,size=''){ clearChatTimer(); modal.className=`modal${size?` ${size}`:''}`; modal.innerHTML=`<button class="modal-close" aria-label="Schließen">×</button>${content}`; modalBackdrop.classList.remove('hidden'); $('.modal-close',modal).onclick=closeModal; }
+function initials(name=''){ return name.split(/\s+/).filter(Boolean).slice(0,2).map(x=>x[0]).join('').toUpperCase() || 'A+'; }
+function imgStyle(url){ return url ? `background-image:url('${escapeHtml(url)}')` : ''; }
+function formatDate(date){ return new Intl.DateTimeFormat('de-DE',{weekday:'short',day:'2-digit',month:'short'}).format(new Date(`${date}T12:00:00`)); }
+function isoDay(offset=0){ const d=new Date(); d.setDate(d.getDate()+offset); return d.toISOString().slice(0,10); }
+function arrText(a){ return (a||[]).join(', '); }
+function parseList(v){ return String(v||'').split(',').map(x=>x.trim()).filter(Boolean); }
+function currency(v){ return `${Number(v||0).toFixed(0)} €`; }
+
+async function loadConfig(){ try{state.config=await api('/api/config');}catch{} }
+async function restoreSession(){ if(!state.token)return renderHeader(); try{state.user=await api('/api/me');}catch{state.token='';localStorage.removeItem('aTrainerToken');} renderHeader(); }
+function setSession(data){ state.token=data.token;state.user=data.user;localStorage.setItem('aTrainerToken',data.token);renderHeader(); }
+function logout(){ state.token='';state.user=null;localStorage.removeItem('aTrainerToken');closeModal();renderHeader();toast('Du wurdest abgemeldet.'); }
+function renderHeader(){ const a=$('#headerActions'); if(!state.user)a.innerHTML='<button class="btn ghost" data-action="login">Anmelden</button><button class="btn light" data-action="signup">Registrieren</button>'; else a.innerHTML=`<button class="btn ghost" data-action="bookings">Termine</button><button class="btn light" data-action="account">${escapeHtml(state.user.name.split(' ')[0])}</button>`; }
+
+async function loadTrainers(){
+  const p=new URLSearchParams(); if(state.filters.search)p.set('search',state.filters.search);if(state.filters.specialty)p.set('specialty',state.filters.specialty);if(state.filters.maxPrice)p.set('maxPrice',state.filters.maxPrice);
+  if(state.userLocation){p.set('lat',state.userLocation.lat);p.set('lng',state.userLocation.lng);p.set('radius','80');}
+  try{state.trainers=await api(`/api/trainers?${p}`);renderTrainers();renderMap();}catch(e){toast(e.message,true);}
+}
+function renderTrainers(){
+  const grid=$('#trainerGrid'); $('#resultsCount').textContent=`${state.trainers.length} Trainer verfügbar`; $('#emptyState').classList.toggle('hidden',state.trainers.length>0);
+  grid.innerHTML=state.trainers.map(t=>`<article class="trainer-card" data-trainer-id="${t.id}"><div class="trainer-image" style="background-image:url('${escapeHtml(t.image||'')}')"><span class="trainer-price">${currency(t.price)} / Einheit</span>${t.verified?'<span class="verified">✓ GEPRÜFT</span>':'<span class="verified">NEUES PROFIL</span>'}</div><div class="trainer-body"><div class="trainer-topline"><div><h3>${escapeHtml(t.name)}</h3><div class="trainer-location">⌖ ${escapeHtml(t.city)}${t.area?` · ${escapeHtml(t.area)}`:''}</div>${t.distanceKm!=null?`<span class="distance-badge">◎ ${t.distanceKm.toFixed(1).replace('.',',')} km entfernt</span>`:''}</div><div class="rating">★ ${Number(t.rating||5).toFixed(1).replace('.',',')} <span>(${t.reviews||0})</span></div></div><p class="profile-headline">${escapeHtml(t.headline||'Personal Trainer')}</p><div class="chips">${(t.specialties||[]).slice(0,3).map(s=>`<span class="chip">${escapeHtml(s)}</span>`).join('')}</div><div class="trainer-footer"><span><b>${t.experience||1} Jahre</b> Erfahrung</span><button aria-label="Profil öffnen">→</button></div></div></article>`).join('');
+  $$('.trainer-card',grid).forEach(c=>c.onclick=()=>showTrainer(c.dataset.trainerId));
+}
+function renderMap(){
+  if(!window.L||!$('#trainerMap'))return;
+  if(!state.map){state.map=L.map('trainerMap',{scrollWheelZoom:false}).setView([50.1109,8.6821],9);L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(state.map);state.markerLayer=L.layerGroup().addTo(state.map);}
+  state.markerLayer.clearLayers(); const bounds=[];
+  if(state.userLocation){L.circleMarker([state.userLocation.lat,state.userLocation.lng],{radius:8,weight:3,color:'#111',fillColor:'#d8ff3e',fillOpacity:1}).addTo(state.markerLayer).bindTooltip('Dein Standort');bounds.push([state.userLocation.lat,state.userLocation.lng]);$('#mapHint').textContent='Trainer sind nach Entfernung zu deinem Standort sortiert.';}
+  state.trainers.forEach(t=>{if(!Number.isFinite(Number(t.lat))||!Number.isFinite(Number(t.lng)))return;const pos=[Number(t.lat),Number(t.lng)];bounds.push(pos);const m=L.marker(pos).addTo(state.markerLayer);m.bindPopup(`<div class="map-popup"><b>${escapeHtml(t.name)}</b><small>${escapeHtml(t.city)} · ${currency(t.price)}</small>${t.distanceKm!=null?`<small>${t.distanceKm.toFixed(1).replace('.',',')} km entfernt</small>`:''}<button data-map-trainer="${t.id}">Profil ansehen</button></div>`);});
+  if(bounds.length)state.map.fitBounds(bounds,{padding:[28,28],maxZoom:12});setTimeout(()=>state.map.invalidateSize(),80);
 }
 
-function toast(message, error = false) {
-  const node = document.createElement('div');
-  node.className = `toast${error ? ' error' : ''}`;
-  node.textContent = message;
-  $('#toastStack').appendChild(node);
-  setTimeout(() => node.remove(), 3200);
+async function fetchAvailability(t,date){ const box=$('#slotRow',modal);if(!box)return;box.innerHTML='<span class="form-help">Freie Zeiten werden geladen ...</span>';try{const data=await api(`/api/trainers/${t.id}/availability?date=${encodeURIComponent(date)}`);if(!data.slots.length){box.innerHTML='<span class="form-help">An diesem Tag sind keine freien Termine verfügbar.</span>';return;}box.innerHTML=data.slots.map((s,i)=>`<button type="button" class="slot${i===0?' active':''}" data-time="${s}">${s}</button>`).join('');$$('.slot',box).forEach(btn=>btn.onclick=()=>{$$('.slot',box).forEach(x=>x.classList.remove('active'));btn.classList.add('active');});}catch(e){box.innerHTML=`<span class="form-help">${escapeHtml(e.message)}</span>`;}}
+async function showTrainer(id){
+  let t;try{t=await api(`/api/trainers/${id}`);}catch(e){return toast(e.message,true);}state.selectedTrainer=t;const date=isoDay(1);
+  openModal(`<div class="profile-modal"><div class="profile-image" style="background-image:url('${escapeHtml(t.image||'')}')"><div class="profile-price"><strong>${currency(t.price)}</strong><small>/ private Einheit</small></div></div><div class="profile-content"><div class="profile-hero"><div class="profile-avatar" style="${imgStyle(t.image)}">${t.image?'':escapeHtml(initials(t.name))}</div><div><span class="kicker">${t.verified?'✓ GEPRÜFTER TRAINER':'PROFIL AUF A+TRAINER'}</span><h2>${escapeHtml(t.name)}</h2><p class="profile-headline">${escapeHtml(t.headline||'Personal Trainer')}</p><div class="profile-badges"><span class="profile-badge">★ ${Number(t.rating||5).toFixed(1).replace('.',',')} · ${t.reviews||0} Bewertungen</span><span class="profile-badge">⌖ ${escapeHtml(t.city)}${t.area?` · ${escapeHtml(t.area)}`:''}</span>${t.distanceKm!=null?`<span class="profile-badge">◎ ${t.distanceKm.toFixed(1).replace('.',',')} km</span>`:''}</div></div></div><div class="profile-sections"><section class="pro-section"><h4>ÜBER MICH</h4><p>${escapeHtml(t.bio||'')}</p></section><section class="pro-section"><h4>PROFIL</h4><div class="profile-fact-grid"><div class="profile-fact"><strong>${t.experience||1} Jahre</strong><small>Erfahrung</small></div><div class="profile-fact"><strong>${escapeHtml((t.languages||[]).join(' · '))}</strong><small>Sprachen</small></div><div class="profile-fact"><strong>${escapeHtml((t.venues||[]).join(' · '))}</strong><small>Trainingsorte</small></div></div><div class="chips">${(t.specialties||[]).map(s=>`<span class="chip">${escapeHtml(s)}</span>`).join('')}</div></section>${(t.certifications||[]).length?`<section class="pro-section"><h4>ZERTIFIKATE & QUALIFIKATIONEN</h4><div class="chips">${t.certifications.map(c=>`<span class="chip">✓ ${escapeHtml(c)}</span>`).join('')}</div></section>`:''}<section class="pro-section"><h4>BEWERTUNGEN</h4>${renderReviews(t.recentReviews||[])}</section></div><div class="booking-box"><h4>TRAINING BUCHEN</h4><div class="booking-row"><input type="date" id="bookingDate" min="${date}" value="${date}"><select id="bookingVenue">${(t.venues||['Fitnessstudio']).map(v=>`<option>${escapeHtml(v)}</option>`).join('')}</select></div><div class="slot-row" id="slotRow"></div><textarea id="bookingNote" rows="2" placeholder="Gibt es etwas, das dein Trainer wissen sollte? (optional)"></textarea><div class="payment-box"><h4>Zahlungsart</h4><p>Du kannst immer vor Ort bezahlen.${state.config.stripeEnabled?' Alternativ steht die sichere Online-Zahlung bereit.':' Online-Zahlung wird nach Hinterlegung des Zahlungsanbieters freigeschaltet.'}</p><div class="payment-methods"><button type="button" class="payment-method active" data-payment-method="vor_ort"><b>Vor Ort bezahlen</b><span>Beim Trainer</span></button><button type="button" class="payment-method" data-payment-method="stripe" ${state.config.stripeEnabled?'':'disabled'}><b>Online bezahlen</b><span>${state.config.stripeEnabled?'Karte über Stripe':'Noch nicht aktiviert'}</span></button></div></div><button class="book-now" id="bookNow">Für ${currency(t.price)} buchen →</button></div></div></div>`, 'xwide');
+  await fetchAvailability(t,date);$('#bookingDate',modal).onchange=e=>fetchAvailability(t,e.target.value);$$('[data-payment-method]',modal).forEach(b=>b.onclick=()=>{if(b.disabled)return;$$('[data-payment-method]',modal).forEach(x=>x.classList.remove('active'));b.classList.add('active');});$('#bookNow',modal).onclick=()=>bookTrainer(t);
+}
+function renderReviews(list){if(!list.length)return '<p>Noch keine verifizierten Bewertungen aus abgeschlossenen Einheiten.</p>';return `<div class="review-list">${list.map(r=>`<div class="review-card"><div class="review-card-head"><b>${escapeHtml(r.clientName||'Kunde')}</b><span class="stars">${'★'.repeat(r.rating)}${'☆'.repeat(5-r.rating)}</span></div>${r.comment?`<p>${escapeHtml(r.comment)}</p>`:''}</div>`).join('')}</div>`;}
+async function bookTrainer(t){
+  if(!state.user){state.pendingTrainerId=t.id;closeModal();showAuth('login');toast('Melde dich an, um diesen Termin zu buchen.');return;}if(state.user.role!=='client')return toast('Trainerkonten können keine Einheit buchen.',true);
+  const slot=$('.slot.active',modal);if(!slot)return toast('Bitte wähle eine freie Uhrzeit.',true);const method=$('.payment-method.active',modal)?.dataset.paymentMethod||'vor_ort';
+  try{const b=await api('/api/bookings',{method:'POST',body:JSON.stringify({trainerId:t.id,date:$('#bookingDate',modal).value,time:slot.dataset.time,venue:$('#bookingVenue',modal).value,note:$('#bookingNote',modal).value,paymentMethod:method})});state.pendingTrainerId=null;if(method==='stripe'&&state.config.stripeEnabled){const pay=await api(`/api/bookings/${b.id}/payment`,{method:'POST',body:JSON.stringify({method:'stripe'})});location.href=pay.checkoutUrl;return;}closeModal();toast(`Termin bei ${t.name} wurde gebucht.`);showDashboard();}catch(e){toast(e.message,true);}
 }
 
-function closeModal() {
-  modalBackdrop.classList.add('hidden');
-  modal.innerHTML = '';
-  modal.className = 'modal';
+function showAuth(mode='login',trainerRole=false){const reg=mode==='register';openModal(`<div class="auth-wrap"><a href="#" class="brand"><span class="brand-mark">A+</span><span>TRAINER</span></a><div class="auth-tabs"><button class="${!reg?'active':''}" data-auth-tab="login">Anmelden</button><button class="${reg?'active':''}" data-auth-tab="register">Registrieren</button></div>${reg?registerForm(trainerRole):loginForm()}</div>`);$$('[data-auth-tab]',modal).forEach(b=>b.onclick=()=>showAuth(b.dataset.authTab,trainerRole));$('form',modal).onsubmit=reg?register:login;$('#regRole',modal)?.addEventListener('change',toggleRoleFields);}
+function loginForm(){return `<form><div class="form-grid"><div class="field full"><label>E-Mail</label><input type="email" name="email" autocomplete="email" required placeholder="name@beispiel.de"></div><div class="field full"><label>Passwort</label><input type="password" name="password" autocomplete="current-password" required placeholder="••••••••"></div></div><button class="submit-btn">Anmelden →</button></form>`;}
+function registerForm(trainer){return `<form><div class="form-grid"><div class="field full"><label>Ich möchte</label><select name="role" id="regRole"><option value="client" ${trainer?'':'selected'}>Einen Trainer finden und buchen</option><option value="trainer" ${trainer?'selected':''}>Personal Training anbieten</option></select></div><div class="field"><label>Vor- und Nachname</label><input name="name" required placeholder="Dein Name"></div><div class="field"><label>Stadt</label><input name="city" required placeholder="Frankfurt am Main"></div><div class="field client-only ${trainer?'hidden':''}"><label>Fitness-Level</label><select name="fitnessLevel"><option value="">Auswählen</option><option>Anfänger</option><option>Fortgeschritten</option><option>Sehr erfahren</option></select></div><div class="field client-only ${trainer?'hidden':''}"><label>Hauptziel</label><input name="goal" placeholder="z. B. Muskelaufbau"></div><div class="field trainer-only ${trainer?'':'hidden'}"><label>Schwerpunkt</label><input name="specialty" placeholder="z. B. Krafttraining"></div><div class="field trainer-only ${trainer?'':'hidden'}"><label>Profil-Titel</label><input name="headline" placeholder="z. B. Strength & Mobility Coach"></div><div class="field"><label>E-Mail</label><input type="email" name="email" required placeholder="name@beispiel.de"></div><div class="field"><label>Telefon</label><input name="phone" placeholder="+49 ..."></div><div class="field full"><label>Passwort</label><input type="password" name="password" minlength="6" required placeholder="Mindestens 6 Zeichen"></div></div><button class="submit-btn">A+Trainer-Konto erstellen →</button><p class="auth-note">Nach der Registrierung kannst du dein professionelles Profil vollständig ergänzen.</p></form>`;}
+function toggleRoleFields(){const trainer=$('#regRole',modal).value==='trainer';$$('.trainer-only',modal).forEach(x=>x.classList.toggle('hidden',!trainer));$$('.client-only',modal).forEach(x=>x.classList.toggle('hidden',trainer));}
+async function afterAuth(data,msg){setSession(data);closeModal();toast(msg);await loadTrainers();if(state.pendingTrainerId&&data.user.role==='client'){const id=state.pendingTrainerId;state.pendingTrainerId=null;return showTrainer(id);}showDashboard();}
+async function login(e){e.preventDefault();const btn=$('.submit-btn',e.currentTarget);btn.disabled=true;try{const data=await api('/api/auth/login',{method:'POST',body:JSON.stringify(Object.fromEntries(new FormData(e.currentTarget)))});await afterAuth(data,`Willkommen zurück, ${data.user.name.split(' ')[0]}!`);}catch(err){toast(err.message,true);btn.disabled=false;}}
+async function register(e){e.preventDefault();const btn=$('.submit-btn',e.currentTarget);btn.disabled=true;try{const data=await api('/api/auth/register',{method:'POST',body:JSON.stringify(Object.fromEntries(new FormData(e.currentTarget)))});await afterAuth(data,'Dein A+Trainer-Konto ist bereit. Ergänze jetzt dein Profil.');}catch(err){toast(err.message,true);btn.disabled=false;}}
+
+function completeness(user,trainer){const values=user.role==='trainer'?[trainer?.image,trainer?.bio,trainer?.headline,trainer?.certifications?.length,trainer?.specialties?.length,trainer?.languages?.length,trainer?.venues?.length]:[user.avatar,user.bio,user.goals?.length,user.fitnessLevel,user.preferredTraining?.length,user.languages?.length,user.city];return Math.round(values.filter(Boolean).length/values.length*100);}
+function calendarHtml(bookings){const days=[];for(let i=0;i<7;i++){const date=isoDay(i),d=new Date(`${date}T12:00:00`),items=bookings.filter(b=>b.date===date&&!['cancelled','declined'].includes(b.status));days.push(`<div class="calendar-day${i===0?' today':''}"><strong>${d.toLocaleDateString('de-DE',{weekday:'short'})}</strong><small>${d.toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit'})}</small>${items.slice(0,2).map(b=>`<div class="calendar-event">${b.time} · ${escapeHtml(state.user.role==='trainer'?(b.client?.name||'Kunde'):(b.trainer?.name||'Trainer'))}</div>`).join('')}</div>`);}return `<div class="calendar-strip">${days.join('')}</div>`;}
+async function showDashboard(){
+  if(!state.user)return showAuth('login');let bookings=[];let trainer=null;try{bookings=await api('/api/bookings');if(state.user.role==='trainer'&&state.user.trainerId)trainer=await api(`/api/trainers/${state.user.trainerId}`);}catch(e){return toast(e.message,true);}const active=bookings.filter(b=>!['cancelled','declined'].includes(b.status));const pct=completeness(state.user,trainer);
+  openModal(`<div class="dashboard"><div class="dashboard-head"><div><span class="kicker">${state.user.role==='trainer'?'TRAINER-DASHBOARD':'MEIN TRAINING'}</span><h2>Hallo, ${escapeHtml(state.user.name.split(' ')[0])}.</h2><p>${active.length} aktive ${active.length===1?'Buchung':'Buchungen'} · ${escapeHtml(state.user.city||'')}</p></div><button class="logout-btn" id="logoutBtn">Abmelden</button></div><div class="profile-completeness"><span>Profil ${pct}% vollständig</span><progress max="100" value="${pct}"></progress><button class="btn accent" id="editProfileBtn">Profil bearbeiten</button></div><div class="dashboard-toolbar"><button class="primary" id="editProfileBtn2">◎ Professionelles Profil</button>${state.user.role==='trainer'?'<button id="availabilityBtn">◫ Verfügbarkeit</button>':''}<button data-dashboard-discover>⌖ Trainer finden</button></div><div class="profile-section"><h4>KALENDER · NÄCHSTE 7 TAGE</h4>${calendarHtml(bookings)}</div><div class="profile-section"><h4>${bookings.length?'TERMINE':'NOCH KEINE TERMINE'}</h4>${bookings.length?`<div class="booking-list">${bookings.map(bookingItem).join('')}</div>`:`<div class="empty-state"><div>◫</div><h3>Dein Kalender ist noch frei</h3><p>${state.user.role==='trainer'?'Neue Kundenbuchungen erscheinen automatisch hier.':'Finde deinen Trainer und buche die erste Einheit.'}</p></div>`}</div></div>`, 'wide');
+  $('#logoutBtn',modal).onclick=logout;$('#editProfileBtn',modal).onclick=showProfileEditor;$('#editProfileBtn2',modal).onclick=showProfileEditor;$('#availabilityBtn',modal)?.addEventListener('click',showAvailabilityEditor);$('[data-dashboard-discover]',modal).onclick=()=>{closeModal();scrollToId('discover');};$$('[data-booking-status]',modal).forEach(b=>b.onclick=()=>updateBooking(b.dataset.bookingId,b.dataset.bookingStatus));$$('[data-chat]',modal).forEach(b=>b.onclick=()=>showChat(b.dataset.chat,b.dataset.name));$$('[data-review]',modal).forEach(b=>b.onclick=()=>showReviewForm(b.dataset.review,b.dataset.name));$$('[data-pay]',modal).forEach(b=>b.onclick=()=>startPayment(b.dataset.pay));$$('[data-client-profile]',modal).forEach(b=>b.onclick=()=>showClientProfile(bookings.find(x=>x.id===b.dataset.clientProfile)?.client));
 }
+function bookingItem(b){const d=new Date(`${b.date}T12:00:00`);const trainerMode=state.user.role==='trainer';const counterpart=trainerMode?(b.client?.name||'Kunde'):(b.trainer?.name||'Trainer');const terminal=['cancelled','declined','completed'].includes(b.status);let actions=`<button class="dark" data-chat="${b.id}" data-name="${escapeHtml(counterpart)}">Chat${b.messagesCount?` (${b.messagesCount})`:''}</button>`;if(trainerMode){actions+=`<button data-client-profile="${b.id}">Kundenprofil</button>`;if(!terminal)actions+=`<button data-booking-id="${b.id}" data-booking-status="completed">Abschließen</button><button data-booking-id="${b.id}" data-booking-status="declined">Ablehnen</button>`;}else{if(!terminal)actions+=`<button data-booking-id="${b.id}" data-booking-status="cancelled">Stornieren</button>`;if(!['cancelled','declined'].includes(b.status)&&b.paymentStatus!=='bezahlt'&&state.config.stripeEnabled)actions+=`<button data-pay="${b.id}">Online bezahlen</button>`;if(b.status==='completed'&&!b.review)actions+=`<button data-review="${b.id}" data-name="${escapeHtml(counterpart)}">Bewerten</button>`;}
+  return `<div class="booking-item"><div class="booking-date"><strong>${String(d.getDate()).padStart(2,'0')}</strong><small>${d.toLocaleString('de-DE',{month:'short'})}</small></div><div class="booking-info"><b>${escapeHtml(counterpart)}</b><small>${escapeHtml(b.time)} · ${escapeHtml(b.venue)} · ${currency(b.price)}</small><small>${trainerMode&&b.client?.goals?.length?`Ziel: ${escapeHtml(b.client.goals.join(', '))}`:''}</small></div><div><span class="status ${b.status}">${statusLabels[b.status]||b.status}</span><span class="payment-pill ${b.paymentStatus==='bezahlt'?'paid':''}">${paymentLabels[b.paymentStatus]||b.paymentStatus}</span><div class="booking-actions">${actions}</div></div></div>`;}
+async function updateBooking(id,status){try{await api(`/api/bookings/${id}`,{method:'PATCH',body:JSON.stringify({status})});toast(`Buchung: ${statusLabels[status]||status}.`);showDashboard();}catch(e){toast(e.message,true);}}
+function showClientProfile(c){if(!c)return toast('Kundenprofil nicht verfügbar.',true);openModal(`<div class="auth-wrap"><div class="profile-hero"><div class="profile-avatar" style="${imgStyle(c.avatar)}">${c.avatar?'':escapeHtml(initials(c.name))}</div><div><span class="kicker">KUNDENPROFIL</span><h2>${escapeHtml(c.name)}</h2><p class="profile-headline">${escapeHtml(c.city||'')}${c.area?` · ${escapeHtml(c.area)}`:''}</p></div></div><div class="profile-sections"><section class="pro-section"><h4>ÜBER MICH</h4><p>${escapeHtml(c.bio||'Noch keine Beschreibung hinterlegt.')}</p></section><section class="pro-section"><h4>TRAININGSZIELE</h4><div class="chips">${(c.goals||[]).map(x=>`<span class="chip">${escapeHtml(x)}</span>`).join('')||'<span class="form-help">Noch keine Ziele hinterlegt.</span>'}</div></section><section class="pro-section"><h4>TRAININGSPROFIL</h4><div class="profile-fact-grid"><div class="profile-fact"><strong>${escapeHtml(c.fitnessLevel||'Nicht angegeben')}</strong><small>Fitness-Level</small></div><div class="profile-fact"><strong>${escapeHtml((c.languages||[]).join(' · ')||'Deutsch')}</strong><small>Sprachen</small></div></div><div class="chips">${(c.preferredTraining||[]).map(x=>`<span class="chip">${escapeHtml(x)}</span>`).join('')}</div></section></div></div>`,'wide');}
 
-function openModal(content, wide = false) {
-  modal.className = `modal${wide ? ' wide' : ''}`;
-  modal.innerHTML = `<button class="modal-close" aria-label="Schließen">×</button>${content}`;
-  modalBackdrop.classList.remove('hidden');
-  $('.modal-close', modal).addEventListener('click', closeModal);
+async function showProfileEditor(){
+  let trainer=null;if(state.user.role==='trainer')try{trainer=await api(`/api/trainers/${state.user.trainerId}`);}catch(e){return toast(e.message,true);}const u=state.user;
+  openModal(`<div class="auth-wrap"><span class="kicker">PROFESSIONELLES PROFIL</span><h2>${state.user.role==='trainer'?'Trainerprofil bearbeiten':'Kundenprofil bearbeiten'}</h2><p class="auth-note">Diese Informationen helfen ${state.user.role==='trainer'?'Kunden, dich besser einzuschätzen.':'deinem Trainer, dich und deine Ziele besser zu verstehen.'}</p><form id="profileForm"><div class="form-grid"><div class="field"><label>Name</label><input name="name" required value="${escapeHtml(u.name||trainer?.name||'')}"></div><div class="field"><label>Stadt</label><input name="city" value="${escapeHtml(u.city||trainer?.city||'')}"></div><div class="field"><label>Stadtteil / Gebiet</label><input name="area" value="${escapeHtml(u.area||trainer?.area||'')}"></div><div class="field"><label>Foto-URL</label><input name="avatar" value="${escapeHtml(u.avatar||trainer?.image||'')}" placeholder="https://..."></div><div class="field full"><label>Über mich</label><textarea name="bio" rows="4">${escapeHtml(u.bio||trainer?.bio||'')}</textarea></div>${state.user.role==='client'?clientProfileFields(u):trainerProfileFields(trainer)}<div class="field full"><label>Standort für Karte</label><div class="location-row"><input name="lat" id="profileLat" placeholder="Breitengrad" value="${escapeHtml(u.lat??trainer?.lat??'')}"><input name="lng" id="profileLng" placeholder="Längengrad" value="${escapeHtml(u.lng??trainer?.lng??'')}"><button type="button" id="useLocationBtn">Standort übernehmen</button></div><p class="form-help">Der genaue Standort hilft bei der Entfernungssuche. Für Trainer wird er für die Kartenposition genutzt.</p></div></div><button class="submit-btn">Profil speichern →</button></form></div>`,'wide');
+  $('#useLocationBtn',modal).onclick=()=>useCurrentLocationInputs();$('#profileForm',modal).onsubmit=e=>saveProfile(e,trainer);
 }
+function clientProfileFields(u){return `<div class="field"><label>Fitness-Level</label><select name="fitnessLevel"><option value="">Auswählen</option>${['Anfänger','Fortgeschritten','Sehr erfahren'].map(x=>`<option ${u.fitnessLevel===x?'selected':''}>${x}</option>`).join('')}</select></div><div class="field"><label>Sprachen</label><input name="languages" value="${escapeHtml(arrText(u.languages))}" placeholder="Deutsch, Englisch"></div><div class="field full"><label>Trainingsziele</label><input name="goals" value="${escapeHtml(arrText(u.goals))}" placeholder="Muskelaufbau, Abnehmen, Beweglichkeit"></div><div class="field full"><label>Bevorzugte Trainingsarten</label><input name="preferredTraining" value="${escapeHtml(arrText(u.preferredTraining))}" placeholder="Krafttraining, Outdoor, Pilates"></div>`;}
+function trainerProfileFields(t){return `<div class="field full"><label>Profil-Titel</label><input name="headline" value="${escapeHtml(t?.headline||'')}" placeholder="z. B. Strength & Mobility Coach"></div><div class="field"><label>Preis pro Einheit (€)</label><input type="number" min="0" name="price" value="${t?.price??75}"></div><div class="field"><label>Erfahrung (Jahre)</label><input type="number" min="0" name="experience" value="${t?.experience??1}"></div><div class="field full"><label>Schwerpunkte</label><input name="specialties" value="${escapeHtml(arrText(t?.specialties))}" placeholder="Krafttraining, Mobilität"></div><div class="field full"><label>Trainingsarten</label><input name="trainingTypes" value="${escapeHtml(arrText(t?.trainingTypes))}" placeholder="1:1 Personal Training, Functional Training"></div><div class="field full"><label>Zertifikate & Qualifikationen</label><input name="certifications" value="${escapeHtml(arrText(t?.certifications))}" placeholder="A-Lizenz, Personal Trainer Zertifikat"></div><div class="field"><label>Sprachen</label><input name="languages" value="${escapeHtml(arrText(t?.languages))}"></div><div class="field"><label>Trainingsorte</label><input name="venues" value="${escapeHtml(arrText(t?.venues))}" placeholder="Fitnessstudio, Outdoor"></div>`;}
+function useCurrentLocationInputs(){if(!navigator.geolocation)return toast('Standort ist in diesem Browser nicht verfügbar.',true);navigator.geolocation.getCurrentPosition(p=>{$('#profileLat',modal).value=p.coords.latitude.toFixed(6);$('#profileLng',modal).value=p.coords.longitude.toFixed(6);toast('Standort übernommen.');},()=>toast('Standortzugriff wurde nicht erlaubt.',true));}
+async function saveProfile(e,trainer){e.preventDefault();const data=Object.fromEntries(new FormData(e.currentTarget));const profile={name:data.name,city:data.city,area:data.area,avatar:data.avatar,bio:data.bio,lat:data.lat,lng:data.lng};if(state.user.role==='client'){profile.fitnessLevel=data.fitnessLevel;profile.languages=parseList(data.languages);profile.goals=parseList(data.goals);profile.preferredTraining=parseList(data.preferredTraining);}try{state.user=await api('/api/me/profile',{method:'PATCH',body:JSON.stringify(profile)});if(state.user.role==='trainer'){await api('/api/me/trainer',{method:'PATCH',body:JSON.stringify({name:data.name,city:data.city,area:data.area,image:data.avatar,bio:data.bio,headline:data.headline,price:data.price,experience:data.experience,specialties:parseList(data.specialties),trainingTypes:parseList(data.trainingTypes),certifications:parseList(data.certifications),languages:parseList(data.languages),venues:parseList(data.venues),lat:data.lat,lng:data.lng})});}renderHeader();await loadTrainers();toast('Profil wurde gespeichert.');showDashboard();}catch(err){toast(err.message,true);}}
 
-function escapeHtml(value = '') {
-  return String(value).replace(/[&<>'"]/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' }[c]));
-}
+async function showAvailabilityEditor(){let t;try{t=await api(`/api/trainers/${state.user.trainerId}`);}catch(e){return toast(e.message,true);}openModal(`<div class="auth-wrap"><span class="kicker">KALENDER & VERFÜGBARKEIT</span><h2>Wann können Kunden dich buchen?</h2><p class="auth-note">Trage pro Wochentag konkrete Startzeiten kommagetrennt ein. Bereits belegte Zeiten werden automatisch ausgeblendet.</p><form id="availabilityForm"><div class="availability-grid">${weekdays.map((day,i)=>`<div class="availability-row"><label>${day}</label><input name="day${i}" value="${escapeHtml(arrText(t.availability?.[i]||[]))}" placeholder="08:00, 12:00, 18:00"></div>`).join('')}</div><div class="field full"><label>Blockierte Tage</label><input name="blockedDates" value="${escapeHtml(arrText(t.blockedDates||[]))}" placeholder="2026-08-25, 2026-09-02"><p class="form-help">Für Urlaub, Krankheit oder komplett ausgebuchte Tage.</p></div><button class="submit-btn">Verfügbarkeit speichern →</button></form></div>`,'wide');$('#availabilityForm',modal).onsubmit=saveAvailability;}
+async function saveAvailability(e){e.preventDefault();const f=Object.fromEntries(new FormData(e.currentTarget));const availability={};for(let i=0;i<7;i++)availability[i]=parseList(f[`day${i}`]);try{await api('/api/me/trainer',{method:'PATCH',body:JSON.stringify({availability,blockedDates:parseList(f.blockedDates)})});toast('Verfügbarkeit wurde aktualisiert.');showDashboard();}catch(err){toast(err.message,true);}}
 
-function fmtSpecialty(value) { return specialtyLabels[value] || value; }
-function fmtVenue(value) { return venueLabels[value] || value; }
-function fmtStatus(value) { return statusLabels[value] || value; }
-function formatDate(date) {
-  return new Intl.DateTimeFormat('de-DE', { weekday: 'short', day: '2-digit', month: 'short' }).format(new Date(`${date}T12:00:00`));
-}
-function tomorrow() {
-  const d = new Date(); d.setDate(d.getDate() + 1);
-  return d.toISOString().slice(0, 10);
-}
+async function showChat(bookingId,name){state.chatBookingId=bookingId;openModal(`<div class="chat-wrap"><div class="chat-head"><span class="kicker">PRIVATER BUCHUNGS-CHAT</span><h2>${escapeHtml(name||'Chat')}</h2><p>Nur du und dein Trainingspartner sehen diese Nachrichten.</p></div><div class="chat-messages" id="chatMessages"><div class="empty-chat">Nachrichten werden geladen ...</div></div><form class="chat-form" id="chatForm"><textarea id="chatText" rows="2" maxlength="2000" placeholder="Nachricht schreiben ..."></textarea><button>Senden</button></form></div>`,'wide');state.chatBookingId=bookingId;await loadMessages(bookingId);$('#chatForm',modal).onsubmit=async e=>{e.preventDefault();const text=$('#chatText',modal).value.trim();if(!text)return;try{await api(`/api/bookings/${bookingId}/messages`,{method:'POST',body:JSON.stringify({text})});$('#chatText',modal).value='';await loadMessages(bookingId);}catch(err){toast(err.message,true);}};state.chatTimer=setInterval(()=>{if(state.chatBookingId===bookingId)loadMessages(bookingId,true);},5000);}
+async function loadMessages(id,silent=false){try{const list=await api(`/api/bookings/${id}/messages`);const box=$('#chatMessages',modal);if(!box)return;box.innerHTML=list.length?list.map(m=>`<div class="chat-message${m.senderId===state.user.id?' mine':''}"><b>${escapeHtml(m.senderName)}</b><p>${escapeHtml(m.text)}</p><small>${new Date(m.createdAt).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</small></div>`).join(''):'<div class="empty-chat">Noch keine Nachrichten. Starte den Chat.</div>';box.scrollTop=box.scrollHeight;}catch(e){if(!silent)toast(e.message,true);}}
 
-async function restoreSession() {
-  if (!state.token) return renderHeader();
-  try {
-    state.user = await api('/api/me');
-  } catch {
-    state.token = ''; localStorage.removeItem('aTrainerToken');
-  }
-  renderHeader();
-}
+function showReviewForm(id,name){openModal(`<div class="auth-wrap"><span class="kicker">VERIFIZIERTE BEWERTUNG</span><h2>${escapeHtml(name)} bewerten</h2><p class="auth-note">Diese Bewertung ist mit einer tatsächlich abgeschlossenen Trainingseinheit verknüpft.</p><form id="reviewForm"><div class="rating-picker">${[1,2,3,4,5].map(n=>`<button type="button" data-rating="${n}">${n}★</button>`).join('')}</div><input type="hidden" id="reviewRating" value=""><div class="field full"><label>Deine Erfahrung</label><textarea id="reviewComment" rows="5" placeholder="Was hat dir besonders gefallen?"></textarea></div><button class="submit-btn">Bewertung veröffentlichen →</button></form></div>`);$$('[data-rating]',modal).forEach(b=>b.onclick=()=>{$('#reviewRating',modal).value=b.dataset.rating;$$('[data-rating]',modal).forEach(x=>x.classList.toggle('active',Number(x.dataset.rating)<=Number(b.dataset.rating)));});$('#reviewForm',modal).onsubmit=async e=>{e.preventDefault();const rating=Number($('#reviewRating',modal).value);if(!rating)return toast('Bitte wähle 1 bis 5 Sterne.',true);try{await api(`/api/bookings/${id}/review`,{method:'POST',body:JSON.stringify({rating,comment:$('#reviewComment',modal).value})});toast('Danke! Deine Bewertung ist veröffentlicht.');await loadTrainers();showDashboard();}catch(err){toast(err.message,true);}};}
+async function startPayment(id){if(!state.config.stripeEnabled)return toast('Online-Zahlung ist noch nicht aktiviert. Vor-Ort-Zahlung bleibt verfügbar.',true);try{const p=await api(`/api/bookings/${id}/payment`,{method:'POST',body:JSON.stringify({method:'stripe'})});location.href=p.checkoutUrl;}catch(e){toast(e.message,true);}}
+async function handlePaymentReturn(){const q=new URLSearchParams(location.search);if(q.get('payment')==='cancelled'){toast('Online-Zahlung wurde abgebrochen. Deine Buchung bleibt bestehen.');history.replaceState({},'',location.pathname);return;}const session=q.get('session_id');if(q.get('payment')==='success'&&session&&state.user){try{const r=await api('/api/payments/confirm',{method:'POST',body:JSON.stringify({sessionId:session})});toast(r.paymentStatus==='bezahlt'?'Zahlung erfolgreich bestätigt.':'Zahlung wird noch verarbeitet.');history.replaceState({},'',location.pathname);showDashboard();}catch(e){toast(e.message,true);}}}
 
-function renderHeader() {
-  const area = $('#headerActions');
-  if (!state.user) {
-    area.innerHTML = `<button class="btn ghost" data-action="login">Anmelden</button><button class="btn light" data-action="signup">Registrieren</button>`;
-  } else {
-    area.innerHTML = `<button class="btn ghost" data-action="bookings">Buchungen</button><button class="btn light" data-action="account">${escapeHtml(state.user.name.split(' ')[0])}</button>`;
-  }
-}
-
-async function loadTrainers() {
-  const params = new URLSearchParams();
-  if (state.filters.search) params.set('search', state.filters.search);
-  if (state.filters.specialty) params.set('specialty', state.filters.specialty);
-  if (state.filters.maxPrice) params.set('maxPrice', state.filters.maxPrice);
-  try {
-    state.trainers = await api(`/api/trainers?${params.toString()}`);
-    renderTrainers();
-  } catch (e) { toast(e.message, true); }
-}
-
-function renderTrainers() {
-  const grid = $('#trainerGrid');
-  $('#resultsCount').textContent = `${state.trainers.length} ${state.trainers.length === 1 ? 'Trainer verfügbar' : 'Trainer verfügbar'}`;
-  $('#emptyState').classList.toggle('hidden', state.trainers.length > 0);
-  grid.innerHTML = state.trainers.map((t) => `
-    <article class="trainer-card" data-trainer-id="${t.id}">
-      <div class="trainer-image" style="background-image:url('${escapeHtml(t.image)}')">
-        <span class="trainer-price">${Number(t.price).toFixed(0)} € / Einheit</span>
-        ${t.verified ? '<span class="verified">✓ GEPRÜFT</span>' : '<span class="verified">NEUER TRAINER</span>'}
-      </div>
-      <div class="trainer-body">
-        <div class="trainer-topline">
-          <div><h3>${escapeHtml(t.name)}</h3><div class="trainer-location">⌖ ${escapeHtml(t.city)}${t.area ? ` · ${escapeHtml(t.area)}` : ''}</div></div>
-          <div class="rating">★ ${Number(t.rating || 5).toFixed(1).replace('.', ',')} <span>(${t.reviews || 0})</span></div>
-        </div>
-        <div class="chips">${(t.specialties || []).slice(0, 3).map((s) => `<span class="chip">${escapeHtml(fmtSpecialty(s))}</span>`).join('')}</div>
-        <div class="trainer-footer"><span><b>${t.experience || 1} ${Number(t.experience) === 1 ? 'Jahr' : 'Jahre'}</b> Erfahrung</span><button aria-label="Profil von ${escapeHtml(t.name)} öffnen">→</button></div>
-      </div>
-    </article>`).join('');
-  $$('.trainer-card', grid).forEach((card) => card.addEventListener('click', () => showTrainer(card.dataset.trainerId)));
-}
-
-async function showTrainer(id) {
-  let t = state.trainers.find((x) => x.id === id);
-  if (!t) {
-    try { t = await api(`/api/trainers/${id}`); } catch (e) { return toast(e.message, true); }
-  }
-  state.selectedTrainer = t;
-  const defaultDate = tomorrow();
-  openModal(`
-    <div class="profile-modal">
-      <div class="profile-image" style="background-image:url('${escapeHtml(t.image)}')">
-        <div class="profile-price"><strong>${Number(t.price).toFixed(0)} €</strong> <small>/ private Einheit</small></div>
-      </div>
-      <div class="profile-content">
-        <span class="kicker">${t.verified ? '✓ GEPRÜFTER TRAINER' : 'NEUER TRAINER'}</span>
-        <h2>${escapeHtml(t.name)}</h2>
-        <div class="profile-meta">★ ${Number(t.rating || 5).toFixed(1).replace('.', ',')} (${t.reviews || 0} Bewertungen) · ⌖ ${escapeHtml(t.city)}${t.area ? `, ${escapeHtml(t.area)}` : ''}</div>
-        <div class="chips">${(t.specialties || []).map((s) => `<span class="chip">${escapeHtml(fmtSpecialty(s))}</span>`).join('')}</div>
-        <p class="profile-bio">${escapeHtml(t.bio || '')}</p>
-        <div class="profile-section"><h4>TRAINER-DETAILS</h4><div class="profile-facts"><div><b>${t.experience || 1} ${Number(t.experience) === 1 ? 'Jahr' : 'Jahre'}</b><br>Erfahrung</div><div><b>${escapeHtml((t.languages || []).join(' · '))}</b><br>Sprachen</div><div><b>${escapeHtml((t.venues || []).map(fmtVenue).join(' · '))}</b><br>Trainingsorte</div><div><b>1:1 privat</b><br>Trainingsformat</div></div></div>
-        <div class="booking-box">
-          <h4>TRAINING BUCHEN</h4>
-          <div class="booking-row"><input type="date" id="bookingDate" min="${defaultDate}" value="${defaultDate}"><select id="bookingVenue">${(t.venues || ['Fitnessstudio']).map((v) => `<option value="${escapeHtml(v)}">${escapeHtml(fmtVenue(v))}</option>`).join('')}</select></div>
-          <div class="slot-row">${(t.slots || ['08:00','12:00','17:00']).map((s, i) => `<button type="button" class="slot${i === 0 ? ' active' : ''}" data-time="${s}">${s}</button>`).join('')}</div>
-          <textarea id="bookingNote" rows="2" placeholder="Gibt es etwas, das dein Trainer wissen sollte? (optional)"></textarea>
-          <button class="book-now" id="bookNow">Für ${Number(t.price).toFixed(0)} € buchen →</button>
-        </div>
-      </div>
-    </div>`, true);
-  $$('.slot', modal).forEach((btn) => btn.addEventListener('click', () => {
-    $$('.slot', modal).forEach((b) => b.classList.remove('active')); btn.classList.add('active');
-  }));
-  $('#bookNow', modal).addEventListener('click', () => bookTrainer(t));
-}
-
-async function bookTrainer(t) {
-  if (!state.user) {
-    state.pendingTrainerId = t.id;
-    closeModal(); showAuth('login'); toast('Melde dich an, um diese Einheit zu buchen.'); return;
-  }
-  if (state.user.role !== 'client') return toast('Trainerkonten können keine Trainingseinheiten buchen.', true);
-  const activeSlot = $('.slot.active', modal);
-  if (!activeSlot) return toast('Bitte wähle eine Uhrzeit.', true);
-  try {
-    await api('/api/bookings', {
-      method: 'POST',
-      body: JSON.stringify({ trainerId: t.id, date: $('#bookingDate', modal).value, time: activeSlot.dataset.time, venue: $('#bookingVenue', modal).value, note: $('#bookingNote', modal).value })
-    });
-    closeModal(); state.pendingTrainerId = null;
-    toast(`Termin bei ${t.name} erfolgreich gebucht.`); showDashboard();
-  } catch (e) { toast(e.message, true); }
-}
-
-function showAuth(mode = 'login', trainerRole = false) {
-  const isRegister = mode === 'register';
-  openModal(`
-    <div class="auth-wrap">
-      <a href="#" class="brand"><span class="brand-mark">A+</span><span>TRAINER</span></a>
-      <div class="auth-tabs"><button class="${!isRegister ? 'active' : ''}" data-auth-tab="login">Anmelden</button><button class="${isRegister ? 'active' : ''}" data-auth-tab="register">Registrieren</button></div>
-      ${isRegister ? registerForm(trainerRole) : loginForm()}
-    </div>`);
-  $$('[data-auth-tab]', modal).forEach((b) => b.addEventListener('click', () => showAuth(b.dataset.authTab, trainerRole)));
-  $('form', modal).addEventListener('submit', isRegister ? register : login);
-  const roleSelect = $('#regRole', modal);
-  if (roleSelect) roleSelect.addEventListener('change', toggleTrainerFields);
-}
-
-function loginForm() {
-  return `<form id="loginForm"><div class="form-grid"><div class="field full"><label>E-Mail</label><input type="email" name="email" autocomplete="email" required placeholder="name@beispiel.de"></div><div class="field full"><label>Passwort</label><input type="password" name="password" autocomplete="current-password" required placeholder="••••••••"></div></div><button class="submit-btn">Anmelden →</button><p class="auth-note">Deine Buchungen und dein Trainerprofil bleiben mit diesem Konto verbunden.</p></form>`;
-}
-
-function registerForm(trainerRole) {
-  return `<form id="registerForm"><div class="form-grid"><div class="field full"><label>Ich möchte</label><select name="role" id="regRole"><option value="client" ${!trainerRole ? 'selected' : ''}>Einen Trainer finden und buchen</option><option value="trainer" ${trainerRole ? 'selected' : ''}>Personal Training anbieten</option></select></div><div class="field"><label>Vor- und Nachname</label><input name="name" autocomplete="name" required placeholder="Dein Name"></div><div class="field"><label>Stadt</label><input name="city" autocomplete="address-level2" required placeholder="Frankfurt am Main"></div><div class="field full trainer-only ${trainerRole ? '' : 'hidden'}"><label>Hauptschwerpunkt</label><input name="specialty" placeholder="z. B. Krafttraining"></div><div class="field"><label>E-Mail</label><input type="email" name="email" autocomplete="email" required placeholder="name@beispiel.de"></div><div class="field"><label>Telefon</label><input name="phone" autocomplete="tel" placeholder="+49 ..."></div><div class="field full"><label>Passwort</label><input type="password" name="password" autocomplete="new-password" minlength="6" required placeholder="Mindestens 6 Zeichen"></div></div><button class="submit-btn">A+Trainer-Konto erstellen →</button><p class="auth-note">Mit der Registrierung stimmst du den Nutzungsbedingungen und der Datenschutzerklärung zu.</p></form>`;
-}
-
-function toggleTrainerFields() {
-  $('.trainer-only', modal)?.classList.toggle('hidden', $('#regRole', modal).value !== 'trainer');
-}
-
-async function afterAuth(data, message) {
-  setSession(data); closeModal(); toast(message);
-  await loadTrainers();
-  if (state.pendingTrainerId && data.user.role === 'client') {
-    const id = state.pendingTrainerId; state.pendingTrainerId = null; return showTrainer(id);
-  }
-  showDashboard();
-}
-
-async function login(e) {
-  e.preventDefault();
-  const submit = $('.submit-btn', e.currentTarget); submit.disabled = true; submit.textContent = 'Anmeldung läuft ...';
-  const form = new FormData(e.currentTarget);
-  try {
-    const data = await api('/api/auth/login', { method:'POST', body: JSON.stringify(Object.fromEntries(form)) });
-    await afterAuth(data, `Willkommen zurück, ${data.user.name.split(' ')[0]}!`);
-  } catch (err) { toast(err.message, true); submit.disabled = false; submit.textContent = 'Anmelden →'; }
-}
-
-async function register(e) {
-  e.preventDefault();
-  const submit = $('.submit-btn', e.currentTarget); submit.disabled = true; submit.textContent = 'Konto wird erstellt ...';
-  const form = new FormData(e.currentTarget);
-  try {
-    const data = await api('/api/auth/register', { method:'POST', body: JSON.stringify(Object.fromEntries(form)) });
-    await afterAuth(data, 'Dein A+Trainer-Konto ist bereit.');
-  } catch (err) { toast(err.message, true); submit.disabled = false; submit.textContent = 'A+Trainer-Konto erstellen →'; }
-}
-
-function setSession(data) {
-  state.token = data.token; state.user = data.user;
-  localStorage.setItem('aTrainerToken', data.token); renderHeader();
-}
-
-function logout() {
-  state.token = ''; state.user = null; state.pendingTrainerId = null;
-  localStorage.removeItem('aTrainerToken'); closeModal(); renderHeader(); toast('Du wurdest abgemeldet.');
-}
-
-async function showDashboard() {
-  if (!state.user) return showAuth('login');
-  let bookings = [];
-  try { bookings = await api('/api/bookings'); } catch (e) { return toast(e.message, true); }
-  const active = bookings.filter((b) => !['cancelled','declined','completed'].includes(b.status));
-  const roleLabel = state.user.role === 'trainer' ? 'TRAINER-DASHBOARD' : 'MEIN TRAINING';
-  openModal(`
-    <div class="dashboard">
-      <div class="dashboard-head"><div><span class="kicker">${roleLabel}</span><h2>Hallo ${escapeHtml(state.user.name.split(' ')[0])}.</h2><p>${active.length} ${active.length === 1 ? 'aktive Buchung' : 'aktive Buchungen'} · ${escapeHtml(state.user.city || '')}</p></div><button class="logout-btn" id="logoutBtn">Abmelden</button></div>
-      ${state.user.role === 'trainer' ? `<div class="chips"><span class="chip">Dein öffentliches Profil ist online</span><span class="chip">Neue Buchungen erscheinen automatisch hier</span></div><div style="margin-top:16px"><button class="btn accent" id="editTrainerProfile">Trainerprofil bearbeiten</button></div>` : ''}
-      <div class="profile-section"><h4>${bookings.length ? 'TRAININGSEINHEITEN' : 'NOCH KEINE TERMINE'}</h4>
-        ${bookings.length ? `<div class="booking-list">${bookings.map(bookingItem).join('')}</div>` : `<div class="empty-state"><div>◫</div><h3>Dein Kalender ist noch frei</h3><p>${state.user.role === 'trainer' ? 'Neue Buchungen deiner Kunden erscheinen hier.' : 'Finde einen Trainer und buche deine erste private Einheit.'}</p>${state.user.role === 'client' ? '<button class="btn accent" data-dashboard-discover>Trainer finden</button>' : ''}</div>`}
-      </div>
-    </div>`, true);
-  $('#logoutBtn', modal).addEventListener('click', logout);
-  $('#editTrainerProfile', modal)?.addEventListener('click', showTrainerProfileEditor);
-  $('[data-dashboard-discover]', modal)?.addEventListener('click', () => { closeModal(); scrollToId('discover'); });
-  $$('[data-booking-status]', modal).forEach((b) => b.addEventListener('click', () => updateBooking(b.dataset.bookingId, b.dataset.bookingStatus)));
-}
-
-function bookingItem(b) {
-  const d = new Date(`${b.date}T12:00:00`);
-  const counterpart = state.user.role === 'trainer' ? b.client?.name || 'Kunde' : b.trainer?.name || 'Trainer';
-  const subtitle = state.user.role === 'trainer' ? `${b.time} · ${escapeHtml(fmtVenue(b.venue))}` : `${b.time} · ${escapeHtml(fmtVenue(b.venue))} · ${b.price} €`;
-  let actions = '';
-  if (!['cancelled','declined','completed'].includes(b.status)) {
-    actions = state.user.role === 'trainer'
-      ? `<div class="booking-actions"><button data-booking-id="${b.id}" data-booking-status="completed">Abschließen</button><button data-booking-id="${b.id}" data-booking-status="declined">Ablehnen</button></div>`
-      : `<div class="booking-actions"><button data-booking-id="${b.id}" data-booking-status="cancelled">Stornieren</button></div>`;
-  }
-  return `<div class="booking-item"><div class="booking-date"><strong>${String(d.getDate()).padStart(2,'0')}</strong><small>${d.toLocaleString('de-DE',{month:'short'}).replace('.','')}</small></div><div class="booking-info"><b>${escapeHtml(counterpart)}</b><small>${subtitle}</small></div><div><span class="status ${b.status}">${escapeHtml(fmtStatus(b.status))}</span>${actions}</div></div>`;
-}
-
-async function updateBooking(id, status) {
-  try {
-    await api(`/api/bookings/${id}`, { method:'PATCH', body:JSON.stringify({ status }) });
-    toast(status === 'cancelled' ? 'Buchung wurde storniert.' : status === 'completed' ? 'Training wurde abgeschlossen.' : 'Buchungsstatus wurde aktualisiert.');
-    showDashboard();
-  } catch (e) { toast(e.message, true); }
-}
-
-async function showTrainerProfileEditor() {
-  let t;
-  try { t = await api(`/api/trainers/${state.user.trainerId}`); } catch (e) { return toast(e.message, true); }
-  openModal(`<div class="auth-wrap"><span class="kicker">TRAINERPROFIL</span><h2>Profil bearbeiten</h2><form id="trainerProfileForm"><div class="form-grid">
-    <div class="field"><label>Name</label><input name="name" required value="${escapeHtml(t.name)}"></div>
-    <div class="field"><label>Stadt</label><input name="city" required value="${escapeHtml(t.city)}"></div>
-    <div class="field"><label>Stadtteil</label><input name="area" value="${escapeHtml(t.area || '')}"></div>
-    <div class="field"><label>Preis pro Einheit (€)</label><input type="number" min="0" name="price" required value="${Number(t.price)}"></div>
-    <div class="field"><label>Erfahrung (Jahre)</label><input type="number" min="0" name="experience" value="${Number(t.experience || 1)}"></div>
-    <div class="field"><label>Schwerpunkte</label><input name="specialties" value="${escapeHtml((t.specialties || []).map(fmtSpecialty).join(', '))}" placeholder="Krafttraining, Mobilität"></div>
-    <div class="field full"><label>Über mich</label><textarea name="bio" rows="4">${escapeHtml(t.bio || '')}</textarea></div>
-    <div class="field full"><label>Bild-URL</label><input name="image" value="${escapeHtml(t.image || '')}"></div>
-    <div class="field"><label>Sprachen</label><input name="languages" value="${escapeHtml((t.languages || []).join(', '))}"></div>
-    <div class="field"><label>Trainingsorte</label><input name="venues" value="${escapeHtml((t.venues || []).map(fmtVenue).join(', '))}"></div>
-    <div class="field full"><label>Verfügbare Uhrzeiten</label><input name="slots" value="${escapeHtml((t.slots || []).join(', '))}" placeholder="08:00, 12:00, 17:00"></div>
-  </div><button class="submit-btn">Profil speichern →</button></form></div>`, true);
-  $('#trainerProfileForm', modal).addEventListener('submit', saveTrainerProfile);
-}
-
-async function saveTrainerProfile(e) {
-  e.preventDefault();
-  const form = Object.fromEntries(new FormData(e.currentTarget));
-  const split = (v) => String(v || '').split(',').map((x) => x.trim()).filter(Boolean);
-  const payload = { ...form, price:Number(form.price), experience:Number(form.experience), specialties:split(form.specialties), languages:split(form.languages), venues:split(form.venues), slots:split(form.slots) };
-  try {
-    await api('/api/me/trainer', { method:'PATCH', body:JSON.stringify(payload) });
-    await loadTrainers(); toast('Trainerprofil wurde gespeichert.'); showDashboard();
-  } catch (e) { toast(e.message, true); }
-}
-
-function scrollToId(id) { document.getElementById(id)?.scrollIntoView({ behavior:'smooth', block:'start' }); }
-function handleAction(action) {
-  if (action === 'discover' || action === 'home') return scrollToId(action === 'home' ? 'home' : 'discover');
-  if (action === 'how') return scrollToId('how');
-  if (action === 'for-trainers') return scrollToId('for-trainers');
-  if (action === 'trainer-signup') return showAuth('register', true);
-  if (action === 'signup') return showAuth('register');
-  if (action === 'login') return showAuth('login');
-  if (action === 'bookings' || action === 'account') return showDashboard();
-}
-
-document.addEventListener('click', (e) => {
-  const target = e.target.closest('[data-action]');
-  if (!target) return;
-  e.preventDefault(); handleAction(target.dataset.action);
-});
-modalBackdrop.addEventListener('click', (e) => { if (e.target === modalBackdrop) closeModal(); });
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !modalBackdrop.classList.contains('hidden')) closeModal(); });
-
-$('#heroSearch').addEventListener('submit', (e) => {
-  e.preventDefault();
-  state.filters.search = [$('#heroCity').value, $('#heroGoal').value].filter(Boolean).join(' ');
-  $('#searchInput').value = state.filters.search; loadTrainers(); scrollToId('discover');
-});
-let searchTimer;
-$('#searchInput').addEventListener('input', (e) => {
-  clearTimeout(searchTimer); searchTimer = setTimeout(() => { state.filters.search = e.target.value.trim(); loadTrainers(); }, 250);
-});
-$('#specialtyFilter').addEventListener('change', (e) => { state.filters.specialty = e.target.value; loadTrainers(); });
-$('#priceFilter').addEventListener('change', (e) => { state.filters.maxPrice = e.target.value; loadTrainers(); });
-$('#clearFilters').addEventListener('click', () => {
-  state.filters = { search:'', specialty:'', maxPrice:'' }; $('#searchInput').value=''; $('#specialtyFilter').value=''; $('#priceFilter').value=''; loadTrainers();
-});
-$('#nearMeButton').addEventListener('click', () => {
-  if (!navigator.geolocation) return toast('Standortzugriff wird von diesem Browser nicht unterstützt.', true);
-  navigator.geolocation.getCurrentPosition(() => {
-    toast('Standort erkannt. Zeige Trainer aus deiner Region.');
-    scrollToId('discover');
-  }, () => toast('Bitte erlaube den Standortzugriff für diese Funktion.', true));
-});
-
-if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
-(async function init() { await restoreSession(); await loadTrainers(); })();
+function scrollToId(id){document.getElementById(id)?.scrollIntoView({behavior:'smooth',block:'start'});}
+function handleAction(a){if(a==='discover'||a==='home')return scrollToId(a==='home'?'home':'discover');if(a==='how')return scrollToId('how');if(a==='for-trainers')return scrollToId('for-trainers');if(a==='trainer-signup')return showAuth('register',true);if(a==='signup')return showAuth('register');if(a==='login')return showAuth('login');if(a==='bookings'||a==='account')return showDashboard();}
+document.addEventListener('click',e=>{const m=e.target.closest('[data-map-trainer]');if(m){e.preventDefault();state.map?.closePopup();showTrainer(m.dataset.mapTrainer);return;}const t=e.target.closest('[data-action]');if(t){e.preventDefault();handleAction(t.dataset.action);}});
+modalBackdrop.addEventListener('click',e=>{if(e.target===modalBackdrop)closeModal();});document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!modalBackdrop.classList.contains('hidden'))closeModal();});
+$('#heroSearch').addEventListener('submit',e=>{e.preventDefault();state.filters.search=[$('#heroCity').value,$('#heroGoal').value].filter(Boolean).join(' ');$('#searchInput').value=state.filters.search;loadTrainers();scrollToId('discover');});
+let searchTimer;$('#searchInput').addEventListener('input',e=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>{state.filters.search=e.target.value.trim();loadTrainers();},250);});$('#specialtyFilter').onchange=e=>{state.filters.specialty=e.target.value;loadTrainers();};$('#priceFilter').onchange=e=>{state.filters.maxPrice=e.target.value;loadTrainers();};$('#clearFilters').onclick=()=>{state.filters={search:'',specialty:'',maxPrice:''};$('#searchInput').value='';$('#specialtyFilter').value='';$('#priceFilter').value='';loadTrainers();};
+$('#nearMeButton').onclick=()=>{if(!navigator.geolocation)return toast('Standort ist in diesem Browser nicht verfügbar.',true);const b=$('#nearMeButton');b.textContent='◎ Standort wird ermittelt ...';navigator.geolocation.getCurrentPosition(p=>{state.userLocation={lat:p.coords.latitude,lng:p.coords.longitude};b.textContent='◎ Standort aktiv';loadTrainers();toast('Trainer werden jetzt nach Entfernung sortiert.');},()=>{b.textContent='◎ In meiner Nähe';toast('Bitte erlaube den Standortzugriff für die Umkreissuche.',true);},{enableHighAccuracy:true,timeout:8000});};
+if('serviceWorker'in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}));
+(async function init(){await loadConfig();await restoreSession();await loadTrainers();await handlePaymentReturn();})();
