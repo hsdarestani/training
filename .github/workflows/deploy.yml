@@ -19,7 +19,6 @@ jobs:
           host: ${{ secrets.HOST }}
           username: root
           password: ${{ secrets.PASS }}
-          script_stop: true
           command_timeout: 20m
           script: |
             set -e
@@ -94,3 +93,4 @@ jobs:
             fi
 
             curl -fsS http://127.0.0.1:3087/api/health
+            curl -fsS -H "Host: $DOMAIN" http://127.0.0.1/api/health
