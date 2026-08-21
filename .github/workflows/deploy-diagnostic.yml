@@ -9,7 +9,7 @@ jobs:
   diagnose:
     runs-on: ubuntu-latest
     steps:
-      - name: Inspect nginx, DNS and SSL
+      - name: Verify production HTTPS
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.HOST }}
@@ -19,19 +19,11 @@ jobs:
           command_timeout: 2m
           script: |
             set -e
-            echo "--- post-fix verification ---"
-            echo "--- app health ---"
-            curl -fsS http://127.0.0.1:3087/api/health || true
+            echo "--- direct app ---"
+            curl -fsS http://127.0.0.1:3087/api/health
             echo
-            echo "--- sites enabled ---"
-            ls -la /etc/nginx/sites-enabled || true
-            echo "--- target vhost ---"
-            cat /etc/nginx/sites-available/training.smarbiz.sbs || true
-            echo "--- nginx relevant config ---"
-            nginx -T 2>/dev/null | grep -nE 'listen .*80|listen .*443|server_name|proxy_pass' | tail -n 120 || true
-            echo "--- nginx response ---"
-            curl -sS -i -H 'Host: training.smarbiz.sbs' http://127.0.0.1/api/health | head -n 30 || true
-            echo "--- dns ---"
-            getent ahostsv4 training.smarbiz.sbs || true
-            echo "--- certs ---"
-            certbot certificates 2>/dev/null || true
+            echo "--- https app ---"
+            curl -fsS https://training.smarbiz.sbs/api/health
+            echo
+            echo "--- listeners ---"
+            ss -ltnp 2>/dev/null | grep -E ':(80|443|3087)\b' || true
