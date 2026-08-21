@@ -9,7 +9,7 @@ jobs:
   diagnose:
     runs-on: ubuntu-latest
     steps:
-      - name: Check SSH and server listeners
+      - name: Check SSH, app, nginx and SSL
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.HOST }}
@@ -25,4 +25,15 @@ jobs:
             echo "node=$(command -v node || true)"
             echo "nginx=$(command -v nginx || true)"
             echo "pm2=$(command -v pm2 || true)"
+            echo "--- listeners ---"
             ss -ltnp 2>/dev/null | grep -E ':(22|80|443|3087)\b' || true
+            echo "--- app health ---"
+            curl -fsS http://127.0.0.1:3087/api/health
+            echo
+            echo "--- nginx health ---"
+            curl -fsS -H 'Host: training.smarbiz.sbs' http://127.0.0.1/api/health
+            echo
+            echo "--- dns ---"
+            getent ahostsv4 training.smarbiz.sbs || true
+            echo "--- certs ---"
+            certbot certificates 2>/dev/null || true
