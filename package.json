@@ -1,0 +1,21 @@
+{
+  "name": "a-plus-trainer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A+Trainer marketplace and booking platform for independent personal trainers",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "uuid": "^11.0.3"
+  }
+}
