@@ -1,0 +1,28 @@
+name: Deployment diagnostics
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check SSH and server listeners
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.HOST }}
+          username: root
+          password: ${{ secrets.PASS }}
+          script_stop: true
+          command_timeout: 2m
+          script: |
+            set -e
+            echo "ssh-ok"
+            echo "host=$(hostname)"
+            echo "user=$(whoami)"
+            echo "node=$(command -v node || true)"
+            echo "nginx=$(command -v nginx || true)"
+            echo "pm2=$(command -v pm2 || true)"
+            ss -ltnp 2>/dev/null | grep -E ':(22|80|443|3087)\b' || true
