@@ -20,17 +20,29 @@ jobs:
           node --check server.js
           node --check public/app.js
           node --check public/sw.js
-      - name: Smoke-test API
+          node --check scripts/e2e.mjs
+      - name: Verify German interface
         run: |
+          grep -q '<html lang="de">' public/index.html
+          grep -q 'Anmelden' public/index.html
+          grep -q 'Registrieren' public/index.html
+          grep -q 'Trainer finden' public/index.html
+          ! grep -Eq '>Log in<|>Create account<|>Discover<|>Bookings<|>Account<' public/index.html
+      - name: End-to-end auth and booking test
+        env:
+          DATA_DIR: /tmp/a-trainer-ci-data
+          JWT_SECRET: ci-only-secret
+        run: |
+          rm -rf "$DATA_DIR"
           node server.js > /tmp/a-trainer.log 2>&1 &
           APP_PID=$!
-          for i in {1..10}; do
-            if curl -fsS http://127.0.0.1:3087/api/health; then
-              kill $APP_PID || true
+          trap 'kill $APP_PID 2>/dev/null || true' EXIT
+          for i in {1..15}; do
+            if curl -fsS http://127.0.0.1:3087/api/health >/dev/null; then
+              node scripts/e2e.mjs
               exit 0
             fi
             sleep 1
           done
           cat /tmp/a-trainer.log
-          kill $APP_PID || true
           exit 1
