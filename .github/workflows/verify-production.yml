@@ -1,0 +1,24 @@
+name: Verify German production
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify live German release
+        run: |
+          set -e
+          for i in {1..12}; do
+            HTML="$(curl -fsS https://training.smarbiz.sbs/ || true)"
+            HEALTH="$(curl -fsS https://training.smarbiz.sbs/api/health || true)"
+            if printf '%s' "$HTML" | grep -q 'Trainer finden' && printf '%s' "$HTML" | grep -q 'Registrieren' && printf '%s' "$HEALTH" | grep -q 'A+Trainer'; then
+              echo 'German production release is live.'
+              exit 0
+            fi
+            sleep 5
+          done
+          echo 'Production did not expose the German release in time.'
+          exit 1
