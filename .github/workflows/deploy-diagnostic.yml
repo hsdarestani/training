@@ -9,7 +9,7 @@ jobs:
   diagnose:
     runs-on: ubuntu-latest
     steps:
-      - name: Check SSH, app, nginx and SSL
+      - name: Inspect nginx, DNS and SSL
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.HOST }}
@@ -19,20 +19,17 @@ jobs:
           command_timeout: 2m
           script: |
             set -e
-            echo "ssh-ok"
-            echo "host=$(hostname)"
-            echo "user=$(whoami)"
-            echo "node=$(command -v node || true)"
-            echo "nginx=$(command -v nginx || true)"
-            echo "pm2=$(command -v pm2 || true)"
-            echo "--- listeners ---"
-            ss -ltnp 2>/dev/null | grep -E ':(22|80|443|3087)\b' || true
             echo "--- app health ---"
-            curl -fsS http://127.0.0.1:3087/api/health
+            curl -fsS http://127.0.0.1:3087/api/health || true
             echo
-            echo "--- nginx health ---"
-            curl -fsS -H 'Host: training.smarbiz.sbs' http://127.0.0.1/api/health
-            echo
+            echo "--- sites enabled ---"
+            ls -la /etc/nginx/sites-enabled || true
+            echo "--- target vhost ---"
+            cat /etc/nginx/sites-available/training.smarbiz.sbs || true
+            echo "--- nginx relevant config ---"
+            nginx -T 2>/dev/null | grep -nE 'listen .*80|server_name|proxy_pass' | tail -n 120 || true
+            echo "--- nginx response ---"
+            curl -sS -i -H 'Host: training.smarbiz.sbs' http://127.0.0.1/api/health | head -n 30 || true
             echo "--- dns ---"
             getent ahostsv4 training.smarbiz.sbs || true
             echo "--- certs ---"
